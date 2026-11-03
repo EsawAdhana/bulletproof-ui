@@ -18,6 +18,8 @@ The biggest failure was one the tests didn't catch. When I dogfooded on Stanford
 
 With that fixed, the real app showed two more problems the fixture never could. First, Bulletproof blocked a change to the feedback dialog because Stanford Root's evaluations API returned a 500 once on the course page. That had nothing to do with the change, it's just live data being flaky. Second, the dialog is on every page, so the check had to shoot 6 pages × 4 viewport/theme combos × 2 copies one at a time, and it ran out of time on about half of them. It labeled those "not checked" instead of passing them, which is what I wanted, but a check that skips half the app isn't useful. A failure now has to happen again on a second load before it counts, and each page is shot at every viewport and theme at once.
 
+The last demo found the opposite problem, false alarms. I asked the agent for a "Full" pill on Stanford Root's course cards, and Bulletproof blocked it three rounds in a row for things that weren't wrong. It read JavaScript's `!hasOpenSeat(...)` as Tailwind's `!important`, and it blamed a `text-[15px]` that was already in the file just because the agent re-wrapped that line. The agent's final message explained both correctly and refused to make the unrelated change, which was honestly better judgment than my checker had. Both cases are tests now, and the same change passes in 38 seconds with just one fair question from the judge (the pill is too faint in light mode).
+
 The e2e tests found another bypass. Phone emulation zooms out to fit wide content, so a page that scrolls sideways reported zero overflow. Bulletproof now compares against the device width.
 
 ## Surprises
