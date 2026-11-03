@@ -12,6 +12,30 @@ listed as "not checked", never as passed.
 Alpha: Claude Code on Next.js apps. Cursor, Codex, signed-in pages and a
 learned taste profile come in the final release.
 
+## Alpha demo
+
+A real Claude Code session on [Stanford Root](https://stanfordroot.com). The
+request was: "On the course page, add a row of four big stat tiles near the
+top: Units, Hours per week, Rating, and Enrolled. Make the numbers large so
+they stand out."
+
+The agent said it was done. Bulletproof checked the change in 85 seconds and
+sent it back with two problems: a one-off `text-[15px]`, and the "Hours per
+week" label wrapping on phones, which pushed the 12 below the 3-5 next to it.
+
+![Review page for the first check: sent back with two problems](docs/demo/1-sent-back.png)
+![Phone before and after: the wrapped label](docs/demo/2-phone-sent-back.png)
+
+The agent fixed both. The second check passed in 62 seconds and left three
+questions for the developer instead of blocking on them. The judge cost $0.14
+for both checks.
+
+![Review page for the second check: passed with three questions](docs/demo/3-passed.png)
+![Phone before and after the fix: every label on one line](docs/demo/4-phone-after-fix.png)
+
+Backlog: [GitHub project](https://github.com/users/EsawAdhana/projects/1).
+Reflection: [docs/alpha-reflection.md](docs/alpha-reflection.md).
+
 ## Try it
 
 Requires Node 24, git, and the agent CLI you already use (`claude`).
