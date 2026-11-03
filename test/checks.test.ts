@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addedLines, fastChecks } from '../src/checks.ts';
+import { addedLines, fastChecks, removedText } from '../src/checks.ts';
 import { Config } from '../src/config.ts';
 import { makeRepo } from './helpers.ts';
 
@@ -69,5 +69,45 @@ describe('addedLines', () => {
       { file: 'x.tsx', line: 11, text: 'new one' },
       { file: 'x.tsx', line: 12, text: 'new two' },
     ]);
+  });
+});
+
+describe('false alarms found dogfooding on Stanford Root', () => {
+  it.each([
+    ['a negated call', "if (!selectedTerms.includes('any')) {"],
+    ['a negation in JSX', '{!hasOpenSeat(course) && <Pill />}'],
+    ['a negation after &&', 'const show = ready && !loading'],
+    ['an exclamation in copy', '<p>Seats are going fast!</p>'],
+  ])('does not read %s as !important', (_name, code) => {
+    expect(rules(code)).toEqual([]);
+  });
+
+  it.each([
+    ['a className', '<p className="!text-red-500">'],
+    ['a responsive variant in cn()', "<div className={cn('md:!p-0', x)}>"],
+    ['a template string', '<div className={`hover:!bg-brand ${x}`}>'],
+  ])('still catches Tailwind important in %s', (_name, code) => {
+    expect(rules(code)).toContain('important:block');
+  });
+
+  it('does not blame a moved or re-wrapped line for a value that was already there', () => {
+    const diff = [
+      '--- a/components/card.tsx',
+      '+++ b/components/card.tsx',
+      '@@ -10,1 +10,4 @@',
+      '-      <span className="text-[15px] font-bold">{code}</span>',
+      '+      <span className="flex items-center gap-2">',
+      '+        <span className="text-[15px] font-bold">{code}</span>',
+      '+        <span className="text-[11px]">Full</span>',
+      '+      </span>',
+    ].join('\n');
+    const found = fastChecks(addedLines(diff), root, cfg, removedText(diff)).map((f) => f.problem);
+    expect(found).toEqual(['`text-[11px]` is a one-off value instead of one from the theme.']);
+  });
+
+  it('does not mistake a removed line that starts with dashes for a file header', () => {
+    const diff = ['--- a/x.css', '+++ b/x.css', '@@ -1,2 +1,2 @@', '--- old comment', '+.a { color: red !important; }'].join('\n');
+    expect(removedText(diff).get('x.css')).toBe('-- old comment\n');
+    expect(addedLines(diff)).toHaveLength(1);
   });
 });

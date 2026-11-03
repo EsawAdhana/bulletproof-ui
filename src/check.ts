@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { basename, extname, join } from 'node:path';
 import { chromium, type Browser } from 'playwright';
-import { addedLines, fastChecks, isUiFile, type CodeFinding } from './checks.ts';
+import { addedLines, fastChecks, isUiFile, removedText, type CodeFinding } from './checks.ts';
 import { captureAgain, captureAll, type Shot } from './capture.ts';
 import type { Config } from './config.ts';
 import { startDevServer, type DevServer } from './devserver.ts';
@@ -87,7 +87,7 @@ export async function runCheck(input: CheckInput): Promise<RunResult> {
   let t = Date.now();
   const diff = sessionDiff(repo, snapshot, changed);
   writeFileSync(join(runDir, 'session.diff'), diff);
-  result.codeFindings = fastChecks(addedLines(diff), repo.root, cfg);
+  result.codeFindings = fastChecks(addedLines(diff), repo.root, cfg, removedText(diff));
   lap('codeChecks', t);
 
   const copies = join(tmpdir(), 'bulletproof', id);
