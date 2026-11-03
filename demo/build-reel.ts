@@ -4,11 +4,12 @@
 //
 //   node demo/build-reel.ts --repo <app repo> --session <session id> --transcript <file.jsonl> --out <dir>
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { chromium } from 'playwright';
+import sharp from 'sharp';
 import type { RunResult } from '../src/check.ts';
 import { findRepo } from '../src/repo.ts';
 import { loadSession } from '../src/session.ts';
@@ -57,22 +58,55 @@ for (const line of readFileSync(values.transcript!, 'utf8').split('\n')) {
   }
 }
 
+/** One readable line per tool call: repo-relative paths, temp paths shortened, heredoc scripts named for what they are. */
 function describeTool(name: string, input: any): string {
-  const rel = (p: string) => String(p ?? '').replace(/^.*Stanford Root-bulletproof\//, '');
-  if (name === 'Read') return `Read ${rel(input.file_path)}`;
-  if (name === 'Edit' || name === 'MultiEdit') return `Edit ${rel(input.file_path)}`;
-  if (name === 'Write') return `Write ${rel(input.file_path)}`;
+  const tidy = (s: string) =>
+    String(s ?? '')
+      .replace(/"?\/[^\s"]*Stanford Root-bulletproof\//g, '')
+      .replace(/\/private\/tmp\/\S*\/([^/\s]+)/g, '…/$1')
+      .replace(/\/tmp\/\S*\/([^/\s]+)/g, '…/$1');
+  if (name === 'Read') return `Read ${tidy(input.file_path)}`;
+  if (name === 'Edit' || name === 'MultiEdit') return `Edit ${tidy(input.file_path)}`;
+  if (name === 'Write') return `Write ${tidy(input.file_path)}`;
   if (name === 'Grep') return `Search "${String(input.pattern).slice(0, 40)}"`;
   if (name === 'Glob') return `Find ${input.pattern}`;
-  if (name === 'Bash') return `$ ${String(input.command).replace(/cd "[^"]+" && /, '').split('\n')[0].slice(0, 90)}`;
+  if (name === 'Skill') return `Load skill ${input.skill ?? ''}`.trim();
+  if (name === 'Bash') {
+    const cmd = tidy(String(input.command).replace(/cd "?[^"&]+"? && /g, '').replace(/^cd \S+ && /, ''));
+    if (/python3? - <</.test(cmd)) return '$ python3 (script that edits files)';
+    return `$ ${cmd.split('\n')[0].slice(0, 80)}`;
+  }
   return name;
+}
+
+/** The pair a viewer can actually read: the one the first finding names, else the most-changed phone shot. */
+function pickShot(run: RunResult) {
+  const changed = run.shots.filter((s) => s.side).sort((a, b) => b.changedPercent - a.changedPercent);
+  const named = (run.judge?.findings ?? []).map((f) => f.shot);
+  return changed.find((s) => named.includes(s.id) && s.viewport === 'phone') ?? changed.find((s) => s.viewport === 'phone') ?? changed[0];
+}
+
+const shotLabel = (s: { route: string; viewport: string; scheme: string }) => `${s.route} · ${s.viewport} · ${s.scheme} mode`;
+
+/** Markdown-ish agent text as plain sentences, cut at a sentence end. */
+function plainText(md: string, max: number): string {
+  const t = md.replace(/\*\*/g, '').replace(/`/g, '');
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max);
+  return cut.slice(0, Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('.\n')) + 1) + ' …';
 }
 
 // ---- What Bulletproof did, from its run records ----
 const runs: RunResult[] = session.runs.map((id) => JSON.parse(readFileSync(join(repo.stateDir, 'runs', id, 'run.json'), 'utf8')));
-const asset = (file: string | null, name: string) => {
+/**
+ * Copies a before | after image for the video. A phone pair is tall and narrow,
+ * so keep only the top, where the side-by-side already starts at the first change.
+ */
+const asset = async (file: string | null, name: string) => {
   if (!file || !existsSync(file)) return null;
-  copyFileSync(file, join(out, 'assets', name));
+  const meta = await sharp(file).metadata();
+  const h = Math.min(meta.height!, Math.round(meta.width! * 0.75));
+  await sharp(file).extract({ left: 0, top: 0, width: meta.width!, height: h }).toFile(join(out, 'assets', name));
   return `assets/${name}`;
 };
 
@@ -94,7 +128,8 @@ const finalText = [...steps].reverse().find((s) => s.kind === 'final')?.text ?? 
 async function shootReview(browser: Awaited<ReturnType<typeof chromium.launch>>): Promise<string | null> {
   const last = runs[runs.length - 1];
   if (!last?.reviewPath) return null;
-  const page = await browser.newPage({ viewport: { width: 1100, height: 1300 }, colorScheme: 'dark' });
+  // Narrow enough that the text is readable at video size; the top is what matters.
+  const page = await browser.newPage({ viewport: { width: 900, height: 600 }, colorScheme: 'dark', deviceScaleFactor: 2 });
   await page.goto(pathToFileURL(last.reviewPath).href);
   const file = join(out, 'assets', 'review.png');
   await page.screenshot({ path: file });
@@ -109,7 +144,10 @@ function findingLines(run: RunResult): string[] {
   return [
     ...run.hardFailures.map((f) => f.problem),
     ...run.codeFindings.filter((f) => f.severity === 'block').map((f) => `${f.file}:${f.line} ${f.problem}`),
-    ...(run.judge?.findings ?? []).filter((f) => f.severity === 'block').map((f) => `[${f.shot}] ${f.problem}`),
+    ...(run.judge?.findings ?? []).filter((f) => f.severity === 'block').map((f) => {
+      const s = run.shots.find((x) => x.id === f.shot);
+      return `${s ? `${s.route} on ${s.viewport}, ${s.scheme}: ` : ''}${f.problem}`;
+    }),
   ];
 }
 
@@ -129,7 +167,7 @@ async function main() {
   );
   scene(`<div class="center"><p class="kicker">The request</p><p class="prompt">"${esc(prompt)}"</p></div>`, 5000);
 
-  runs.forEach((run, i) => {
+  for (const [i, run] of runs.entries()) {
     const work = rounds[i] ?? [];
     scene(
       `<div class="col"><p class="kicker">${i === 0 ? 'The agent works' : `Round ${i}: the agent fixes what came back`}</p>
@@ -150,15 +188,15 @@ async function main() {
        </div></div>`,
       6000,
     );
-    const top = changed[0];
-    const img = top ? asset(top.side, `run${i}-${basename(top.side!)}`) : null;
+    const top = pickShot(run);
+    const img = top ? await asset(top.side, `run${i}-${basename(top.side!)}`) : null;
     if (run.status === 'block') {
       const lines = findingLines(run);
       scene(
         `<div class="split"><div><p class="kicker bad">Sent back · round ${i + 1}</p>
           <ul class="finds">${lines.slice(0, 5).map((l) => `<li>${esc(l)}</li>`).join('')}</ul>
           ${lines.length > 5 ? `<p class="dim small">+${lines.length - 5} more</p>` : ''}</div>
-          ${img ? `<figure><div class="labels"><span>Before</span><span>After</span></div><img src="${img}"><figcaption>${esc(top!.id)} · changes outlined in red</figcaption></figure>` : ''}</div>`,
+          ${img ? `<figure><div class="labels"><span>Before</span><span>After</span></div><img src="${img}"><figcaption>${esc(shotLabel(top!))} · changes outlined in red</figcaption></figure>` : ''}</div>`,
         11000,
       );
     } else {
@@ -166,16 +204,16 @@ async function main() {
       scene(
         `<div class="split"><div><p class="kicker good">Passed</p>
           <p class="sub">Checked ${run.routes.length} page${run.routes.length === 1 ? '' : 's'}, ${run.shots.length} screenshot pairs.</p>
-          ${unsure.length ? `<p class="sub small">Question left for the developer:</p><ul class="finds">${unsure.slice(0, 2).map((u) => `<li>${esc(u.problem)}</li>`).join('')}</ul>` : ''}
+          ${unsure.length ? `<p class="sub small">Question left for the developer:</p><ul class="finds q">${unsure.slice(0, 2).map((u) => `<li>${esc(u.problem)}</li>`).join('')}</ul>` : ''}
           ${run.notChecked.length ? `<p class="dim small">Listed as not checked: ${run.notChecked.length} (e.g. ${esc(run.notChecked[0].slice(0, 90))})</p>` : ''}</div>
-          ${img ? `<figure><div class="labels"><span>Before</span><span>After</span></div><img src="${img}"><figcaption>${esc(top!.id)}</figcaption></figure>` : ''}</div>`,
+          ${img ? `<figure><div class="labels"><span>Before</span><span>After</span></div><img src="${img}"><figcaption>${esc(shotLabel(top!))}</figcaption></figure>` : ''}</div>`,
         10000,
       );
     }
-  });
+  }
 
   if (review) scene(`<div class="col"><p class="kicker">The review page</p><img class="review" src="${review}"></div>`, 7000);
-  if (finalText) scene(`<div class="col"><p class="kicker">The agent's last message</p><div class="term msg">${esc(finalText.slice(0, 900))}</div></div>`, 9000);
+  if (finalText) scene(`<div class="col"><p class="kicker">The agent's last message</p><div class="term msg">${esc(plainText(finalText, 1100))}</div></div>`, 10000);
   scene(
     `<div class="center"><h1>${runs.filter((x) => x.status === 'block').length} round${runs.filter((x) => x.status === 'block').length === 1 ? '' : 's'} sent back, then ${runs[runs.length - 1]?.status === 'pass' ? 'passed' : 'stopped'}</h1>
      <p class="sub">${runs.length} checks · ${secs(totalMs)} of checking · judge $${judgeCost.toFixed(2)}</p>
@@ -202,10 +240,11 @@ async function main() {
   .steps div { font-size: 22px; padding: 10px 0; border-bottom: 1px solid #292524; opacity: 0; animation: in 300ms ease forwards; }
   ${Array.from({ length: 6 }, (_, i) => `.steps div:nth-child(${i + 1}) { animation-delay: ${300 + i * 650}ms; }`).join('\n')}
   .steps b { color: #fff; font-size: 26px; margin-right: 6px; }
-  .finds { margin: 0; padding: 0; list-style: none; } .finds li { background: #1c1917; border-left: 3px solid #f87171; padding: 10px 14px; margin: 0 0 10px; font-size: 17px; line-height: 1.4; border-radius: 4px; }
-  figure { margin: 0; } figure img { max-width: 100%; max-height: 520px; display: block; border: 1px solid #292524; border-radius: 6px; } figcaption { color: #78716c; font-size: 14px; margin-top: 8px; font-family: ui-monospace, monospace; }
+  .finds { margin: 0; padding: 0; list-style: none; } .finds.q li { border-left-color: #facc15; }
+  .finds li { background: #1c1917; border-left: 3px solid #f87171; padding: 10px 14px; margin: 0 0 10px; font-size: 17px; line-height: 1.4; border-radius: 4px; }
+  figure { margin: 0; display: inline-block; max-width: 100%; } figure img { width: 100%; max-height: 540px; object-fit: contain; object-position: left top; display: block; border: 1px solid #292524; border-radius: 6px; } figcaption { color: #78716c; font-size: 14px; margin-top: 8px; font-family: ui-monospace, monospace; }
   .labels { display: grid; grid-template-columns: 1fr 1fr; font-size: 13px; font-weight: 600; color: #a8a29e; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
-  img.review { max-height: 560px; align-self: flex-start; border: 1px solid #292524; border-radius: 6px; }
+  img.review { width: 900px; height: 600px; align-self: flex-start; border: 1px solid #292524; border-radius: 6px; }
   @keyframes in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
   </style></head><body>
   ${scenes.map((s, i) => `<section class="scene" id="s${i}">${s.html}</section>`).join('\n')}
