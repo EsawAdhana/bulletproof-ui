@@ -7,7 +7,7 @@ on:
 
 jobs:
   check:
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -18,5 +18,5 @@ jobs:
       - run: npm ci
       - run: npm ci
         working-directory: fixtures/next-app
-      - run: node node_modules/playwright/cli.js install chromium-headless-shell
+      - run: node node_modules/playwright/cli.js install --with-deps chromium-headless-shell
       - run: npm run check
