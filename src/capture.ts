@@ -24,7 +24,8 @@ export interface Shot {
 }
 
 export function shotId(route: string, viewport: string, scheme: string): string {
-  const slug = route === '/' ? 'home' : route.replace(/^\//, '').replace(/[^A-Za-z0-9]+/g, '-');
+  // /instructors/[slug] -> instructors-slug
+  const slug = route === '/' ? 'home' : route.replace(/^\//, '').replace(/[[\]]/g, '').replace(/[^A-Za-z0-9]+/g, '-');
   return `${slug}.${viewport}.${scheme}`;
 }
 
