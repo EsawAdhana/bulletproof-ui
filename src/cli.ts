@@ -16,7 +16,9 @@ const PKG_ROOT = resolve(dirname(CLI), '..');
 const HOOK_EVENTS = {
   SessionStart: { event: 'session-start' },
   UserPromptSubmit: { event: 'user-prompt-submit' },
-  PostToolUse: { event: 'post-tool-use', matcher: 'Edit|Write|MultiEdit|NotebookEdit' },
+  // Shell commands are bracketed so edits made with sed, python, codegen etc. are recorded too.
+  PreToolUse: { event: 'pre-tool-use', matcher: 'Bash' },
+  PostToolUse: { event: 'post-tool-use', matcher: 'Edit|Write|MultiEdit|NotebookEdit|Bash' },
   Stop: { event: 'stop', timeout: 600 },
 } as const;
 

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { handleHook, readRequest } from '../src/hooks.ts';
@@ -119,5 +119,39 @@ describe('readRequest', () => {
     expect(r).toContain('Latest message:\nAlso make it blue on mobile.');
     expect(r).not.toContain('meta');
     expect(r).not.toContain('/clear');
+  });
+});
+
+describe('shell edits', () => {
+  const shell = async (root: string, id: string, run: () => void) => {
+    await handleHook('pre-tool-use', { session_id: 's', cwd: root, tool_name: 'Bash', tool_use_id: id, tool_input: { command: 'x' } });
+    run();
+    await handleHook('post-tool-use', { session_id: 's', cwd: root, tool_name: 'Bash', tool_use_id: id, tool_input: { command: 'x' } });
+  };
+
+  it('records files the agent changes, creates or deletes through Bash', async () => {
+    const root = makeRepo({ 'a.tsx': 'x\n', 'b.tsx': 'x\n', 'gone.tsx': 'x\n' });
+    await handleHook('session-start', { session_id: 's', cwd: root });
+    await shell(root, 't1', () => {
+      write(root, { 'a.tsx': 'sed edit\n', 'src/new-card.tsx': 'created by python\n' });
+      rmSync(join(root, 'gone.tsx'));
+    });
+    expect(editedFiles(findRepo(root)!, 's')).toEqual(['a.tsx', 'gone.tsx', 'src/new-card.tsx']);
+  });
+
+  it('records a second edit to a file that was already dirty, and a file put back to clean', async () => {
+    const root = makeRepo({ 'a.tsx': 'x\n', 'b.tsx': 'x\n' });
+    write(root, { 'a.tsx': 'dirty before the session\n', 'b.tsx': 'dirty too\n' });
+    await handleHook('session-start', { session_id: 's', cwd: root });
+    await shell(root, 't1', () => write(root, { 'a.tsx': 'changed again\n', 'b.tsx': 'x\n' }));
+    expect(editedFiles(findRepo(root)!, 's')).toEqual(['a.tsx', 'b.tsx']);
+  });
+
+  it("does not credit a read-only command or files other windows changed earlier", async () => {
+    const root = makeRepo({ 'a.tsx': 'x\n' });
+    await handleHook('session-start', { session_id: 's', cwd: root });
+    write(root, { 'other.tsx': 'another window\n' });
+    await shell(root, 't1', () => {});
+    expect(editedFiles(findRepo(root)!, 's')).toEqual([]);
   });
 });

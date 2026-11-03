@@ -1,11 +1,12 @@
 // Claude Code hook handlers. Each hook is a separate process that reads the
 // agent's JSON on stdin and answers on stdout. A Bulletproof bug must never
 // stop the developer's agent, so every failure ends in "not checked", not a crash.
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runCheck, type RunResult } from './check.ts';
 import { loadConfig } from './config.ts';
-import { findRepo, type Repo } from './repo.ts';
+import { findRepo, git, type Repo } from './repo.ts';
 import { editedFiles, loadSession, recordEdit, saveSession, type Session } from './session.ts';
 import { changedSince, fingerprint, takeSnapshot } from './snapshot.ts';
 
@@ -16,7 +17,8 @@ export interface HookInput {
   hook_event_name?: string;
   source?: string;
   tool_name?: string;
-  tool_input?: { file_path?: string; notebook_path?: string };
+  tool_use_id?: string;
+  tool_input?: { file_path?: string; notebook_path?: string; command?: string };
   stop_hook_active?: boolean;
 }
 
@@ -33,6 +35,8 @@ export async function handleHook(event: string, input: HookInput): Promise<HookO
       return sessionStart(repo, input);
     case 'user-prompt-submit':
       return userPromptSubmit(repo, input);
+    case 'pre-tool-use':
+      return preToolUse(repo, input);
     case 'post-tool-use':
       return postToolUse(repo, input);
     case 'stop':
@@ -62,7 +66,60 @@ function userPromptSubmit(repo: Repo, input: HookInput): HookOutput {
   return null;
 }
 
+// Agents also edit through the shell (sed, python, codegen). Before each shell
+// command, note the content of every dirty file; after it, whatever changed in
+// between belongs to this session. Another window saving during that same command
+// would be credited too, which is the safer mistake: it gets checked, not skipped.
+function preToolUse(repo: Repo, input: HookInput): HookOutput {
+  if (input.tool_name !== 'Bash' || !input.tool_use_id) return null;
+  if (!loadSession(repo, input.session_id)) startSession(repo, input.session_id);
+  writeFileSync(shellMarkPath(repo, input), JSON.stringify(dirtyState(repo)));
+  return null;
+}
+
+function shellMarkPath(repo: Repo, input: HookInput): string {
+  const dir = join(repo.stateDir, 'sessions');
+  mkdirSync(dir, { recursive: true });
+  return join(dir, `${input.session_id.replace(/[^A-Za-z0-9_-]/g, '_')}.shell-${input.tool_use_id!.replace(/[^A-Za-z0-9_-]/g, '_')}.json`);
+}
+
+/** Content hash of every file git sees as changed, added or deleted right now. */
+export function dirtyState(repo: Repo): Record<string, string> {
+  const out: Record<string, string> = {};
+  const status = git(repo.root, ['status', '--porcelain=v1', '-z', '--untracked-files=all']);
+  const paths: string[] = [];
+  const entries = status.split('\0').filter(Boolean);
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    paths.push(e.slice(3));
+    if (e[0] === 'R' || e[0] === 'C') i++; // the next entry is the rename's source
+  }
+  const existing = paths.filter((p) => existsSync(join(repo.root, p)));
+  const hashes = existing.length ? git(repo.root, ['hash-object', '--', ...existing]).split('\n') : [];
+  existing.forEach((p, i) => (out[p] = hashes[i]));
+  for (const p of paths) if (!(p in out)) out[p] = 'deleted';
+  return out;
+}
+
+function shellEdits(repo: Repo, input: HookInput): string[] {
+  const mark = shellMarkPath(repo, input);
+  if (!existsSync(mark)) return [];
+  const before: Record<string, string> = JSON.parse(readFileSync(mark, 'utf8'));
+  rmSync(mark, { force: true });
+  const after = dirtyState(repo);
+  const touched = new Set<string>();
+  for (const p of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    // A file that went from dirty back to clean is in "before" only; it changed too.
+    if (before[p] !== after[p]) touched.add(p);
+  }
+  return [...touched];
+}
+
 function postToolUse(repo: Repo, input: HookInput): HookOutput {
+  if (input.tool_name === 'Bash') {
+    for (const p of shellEdits(repo, input)) recordEdit(repo, input.session_id, p, repo.root);
+    return null;
+  }
   if (!input.tool_name || !EDIT_TOOLS.has(input.tool_name)) return null;
   const path = input.tool_input?.file_path ?? input.tool_input?.notebook_path;
   if (!path) return null;
