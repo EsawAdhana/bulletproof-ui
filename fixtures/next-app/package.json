@@ -1,0 +1,17 @@
+{
+  "name": "bulletproof-fixture",
+  "private": true,
+  "scripts": { "dev": "next dev" },
+  "dependencies": {
+    "next": "16.1.1",
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.1.18",
+    "tailwindcss": "4.1.18",
+    "typescript": "5.9.3",
+    "@types/react": "19.2.7",
+    "@types/node": "24.10.4"
+  }
+}
