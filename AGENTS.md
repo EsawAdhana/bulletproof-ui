@@ -10,8 +10,8 @@ file is how to work on the code.
 
 1. **Session start** (`src/snapshot.ts` `takeSnapshot`): commit the working tree
    through a temporary index. Never touch the developer's files, index or stash.
-2. **Edits** (`src/session.ts`): each edited path is appended to the session's
-   `.edits` log. Only these files go into the "after" copy, so other windows'
+2. **Edits** (`src/session.ts`, `src/hooks.ts`): each path the agent edits, with
+   an edit tool or through Bash, is appended to the session's `.edits` log. Only these files go into the "after" copy, so other windows'
    edits are never checked or blamed.
 3. **Stop** (`src/check.ts` `runCheck`):
    - `src/checks.ts`: plain code checks on added lines (one-off values, hard-coded
@@ -42,8 +42,9 @@ the working tree.
 
 ## Hook formats
 
-Claude Code (alpha): `bulletproof-ui hook <session-start|user-prompt-submit|post-tool-use|stop>`
-reads the hook JSON on stdin. Stop answers `{"decision":"block","reason":...}` or
+Claude Code (alpha): `bulletproof-ui hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|stop>`
+reads the hook JSON on stdin. Bash commands are bracketed by pre/post-tool-use so
+edits made through the shell are recorded too (agents often edit with sed or python). Stop answers `{"decision":"block","reason":...}` or
 `{"systemMessage":...}`. Cursor and Codex adapters are the final milestone.
 
 ## Run and test
