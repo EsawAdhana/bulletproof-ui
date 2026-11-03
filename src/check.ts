@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { basename, extname, join } from 'node:path';
 import { chromium, type Browser } from 'playwright';
 import { addedLines, fastChecks, isUiFile, type CodeFinding } from './checks.ts';
-import { captureAll, type Shot } from './capture.ts';
+import { captureAgain, captureAll, type Shot } from './capture.ts';
 import type { Config } from './config.ts';
 import { startDevServer, type DevServer } from './devserver.ts';
 import { diffPair } from './pixeldiff.ts';
@@ -130,6 +130,9 @@ export async function runCheck(input: CheckInput): Promise<RunResult> {
       captureAll(browser, after.url, found.routes, cfg, join(runDir, 'after'), deadline),
     ]);
     lap('screenshots', t);
+    t = Date.now();
+    await confirmFailures(browser, before.url, after.url, bShots, aShots, cfg, runDir, deadline);
+    lap('recheck', t);
     await Promise.all(servers.map((s) => s.stop()));
 
     t = Date.now();
@@ -233,6 +236,45 @@ async function comparePairs(bShots: Shot[], aShots: Shot[], runDir: string, resu
     pair.changedPercent = d.ratio * 100;
   }
   return pairs;
+}
+
+/**
+ * Live data makes single page loads flaky (Stanford Root's evaluations API
+ * returned a 500 once during a change that never touched it). A failure only
+ * counts if it happens again on a second load of the after page and on neither
+ * load of the before page. Pages that could not be reloaded in time keep their
+ * first result, so a real failure is never dropped for lack of time.
+ */
+async function confirmFailures(
+  browser: Browser,
+  beforeUrl: string,
+  afterUrl: string,
+  bShots: Shot[],
+  aShots: Shot[],
+  cfg: Config,
+  runDir: string,
+  deadline: number,
+): Promise<void> {
+  const byId = new Map(bShots.map((s) => [s.id, s]));
+  const suspects = aShots.filter((a) => {
+    const b = byId.get(a.id)!;
+    return (a.loadError && !b.loadError) || a.consoleErrors.some((e) => !b.consoleErrors.includes(e)) || a.failedRequests.some((r) => !b.failedRequests.includes(r));
+  });
+  const recheck = async (a: Shot) => {
+    const b = byId.get(a.id)!;
+    const [a2, b2] = await Promise.all([
+      captureAgain(browser, afterUrl, a, cfg, join(runDir, 'recheck', 'after'), deadline),
+      captureAgain(browser, beforeUrl, b, cfg, join(runDir, 'recheck', 'before'), deadline),
+    ]);
+    if (/Ran out of time/.test(a2.loadError ?? '') || /Ran out of time/.test(b2.loadError ?? '')) return;
+    if (a.loadError && !a2.loadError) Object.assign(a, { ...a2, consoleErrors: a.consoleErrors, failedRequests: a.failedRequests, loadError: null });
+    a.consoleErrors = a.consoleErrors.filter((e) => a2.consoleErrors.includes(e));
+    a.failedRequests = a.failedRequests.filter((r) => a2.failedRequests.includes(r));
+    b.consoleErrors = unique([...b.consoleErrors, ...b2.consoleErrors]);
+    b.failedRequests = unique([...b.failedRequests, ...b2.failedRequests]);
+  };
+  // A few at a time: each recheck loads two pages.
+  for (let i = 0; i < suspects.length; i += 4) await Promise.all(suspects.slice(i, i + 4).map(recheck));
 }
 
 function unique<T>(xs: T[]): T[] {

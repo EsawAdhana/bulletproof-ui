@@ -61,6 +61,24 @@ describe('end to end', () => {
     expect(r.hardFailures.map((f) => f.problem).join('\n')).toContain('boom from the new widget');
   }, 180_000);
 
+  it('does not block on a request that fails once and then works (live data is flaky)', async () => {
+    const flaky = 'app/api/seats/route.ts';
+    const widget = 'components/seats.tsx';
+    const r = await scenario(
+      (root) => {
+        // Fails on the first call the server sees, then succeeds, like Stanford Root's evaluations API did once.
+        write(root, {
+          [flaky]: "let calls = 0;\nexport async function GET() {\n  calls++;\n  return calls === 1 ? new Response('busy', { status: 500 }) : Response.json({ seats: 12 });\n}\n",
+          [widget]: "'use client';\nimport { useEffect, useState } from 'react';\nexport function Seats() {\n  const [n, setN] = useState<number | null>(null);\n  useEffect(() => {\n    fetch('/api/seats').then((r) => (r.ok ? r.json() : null)).then((d) => setN(d?.seats ?? null));\n  }, []);\n  return <p className=\"mt-1 text-sm text-muted\">{n === null ? 'Seats loading' : `${n} seats left`}</p>;\n}\n",
+        });
+        edit(root, CARD, "import { Button } from '@/components/ui/button';", "import { Button } from '@/components/ui/button';\nimport { Seats } from '@/components/seats';");
+        edit(root, CARD, UNITS, `${UNITS}\n      <Seats />`);
+      },
+      { files: [CARD, flaky, widget], cfg: { schemes: ['light'] } },
+    );
+    expect(r.hardFailures).toEqual([]);
+  }, 180_000);
+
   it("ignores another window's edits: they are neither checked nor blamed", async () => {
     const r = await scenario((root) => {
       edit(root, CARD, UNITS, `${UNITS}\n      <p className="mt-1 text-sm text-muted">Letter grade</p>`);

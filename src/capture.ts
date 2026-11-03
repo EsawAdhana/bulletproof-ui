@@ -31,6 +31,24 @@ export function shotId(route: string, viewport: string, scheme: string): string 
 // Hides the Next.js dev badge and toasts so they never show up as a difference.
 const HIDE_DEV_UI = 'nextjs-portal, [data-nextjs-toast], #__next-build-watcher { display: none !important; }';
 
+type Viewport = Config['viewports'][number];
+
+function newContext(browser: Browser, vp: Viewport, scheme: 'light' | 'dark'): Promise<BrowserContext> {
+  return browser.newContext({
+    viewport: { width: vp.width, height: vp.height },
+    colorScheme: scheme,
+    reducedMotion: 'reduce',
+    deviceScaleFactor: 1,
+    isMobile: vp.width < 600,
+    hasTouch: vp.width < 600,
+  });
+}
+
+/**
+ * Pages go in order of closeness to the change, and each page is shot at every
+ * viewport and scheme at once. If time runs out, the pages farthest from the
+ * change are the ones left unchecked, not a whole viewport.
+ */
 export async function captureAll(
   browser: Browser,
   baseUrl: string,
@@ -40,27 +58,29 @@ export async function captureAll(
   deadline: number,
 ): Promise<Shot[]> {
   mkdirSync(outDir, { recursive: true });
+  const combos = cfg.viewports.flatMap((vp) => cfg.schemes.map((scheme) => ({ vp, scheme })));
+  const contexts = await Promise.all(combos.map((c) => newContext(browser, c.vp, c.scheme)));
   const shots: Shot[] = [];
-  for (const vp of cfg.viewports) {
-    for (const scheme of cfg.schemes) {
-      const ctx = await browser.newContext({
-        viewport: { width: vp.width, height: vp.height },
-        colorScheme: scheme,
-        reducedMotion: 'reduce',
-        deviceScaleFactor: 1,
-        isMobile: vp.width < 600,
-        hasTouch: vp.width < 600,
-      });
-      try {
-        for (const r of routes) {
-          shots.push(await captureOne(ctx, baseUrl, r, vp.name, scheme, cfg, outDir, deadline));
-        }
-      } finally {
-        await ctx.close();
-      }
+  try {
+    for (const r of routes) {
+      shots.push(...(await Promise.all(combos.map((c, i) => captureOne(contexts[i], baseUrl, r, c.vp.name, c.scheme, cfg, outDir, deadline)))));
     }
+  } finally {
+    await Promise.all(contexts.map((c) => c.close()));
   }
   return shots;
+}
+
+/** Shoots one page again in a fresh context, to tell a real failure from a flaky one. */
+export async function captureAgain(browser: Browser, baseUrl: string, shot: Shot, cfg: Config, outDir: string, deadline: number): Promise<Shot> {
+  const vp = cfg.viewports.find((v) => v.name === shot.viewport)!;
+  const ctx = await newContext(browser, vp, shot.scheme);
+  try {
+    mkdirSync(outDir, { recursive: true });
+    return await captureOne(ctx, baseUrl, { pattern: shot.route, url: shot.url, distance: 0 }, shot.viewport, shot.scheme, cfg, outDir, deadline);
+  } finally {
+    await ctx.close();
+  }
 }
 
 async function captureOne(
